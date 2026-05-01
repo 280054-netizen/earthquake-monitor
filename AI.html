@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <link rel="manifest" href="manifest.json">
+  <title>救命防災ポータル</title>
+  <style>
+    :root { --main: #1a73e8; --danger: #d93025; --bg: #000; --warn: #fbbc04; }
+    body { background-color: var(--bg); font-family: -apple-system, sans-serif; margin: 0; color: #fff; overflow: hidden; }
+    .device { width: 100vw; height: 100vh; display: flex; flex-direction: column; }
+    .header { background: #1a73e8; padding: 15px; font-weight: bold; }
+    #screen { flex-grow: 1; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+    
+    /* 免責事項モーダル */
+    #disclaimer {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.9); z-index: 1000; display: flex;
+      align-items: center; justify-content: center; padding: 20px; box-sizing: border-box;
+    }
+    .modal-content {
+      background: #1c1c1e; padding: 20px; border-radius: 20px; border: 1px solid #333; text-align: center;
+    }
+
+    #timer-panel { 
+      background: #1c1c1e; border: 2px solid #333; border-radius: 20px; padding: 15px; text-align: center;
+    }
+    .timer-active { border-color: var(--warn) !important; background: rgba(251, 188, 4, 0.1) !important; }
+    .timer-danger { border-color: var(--danger) !important; background: rgba(217, 48, 37, 0.3) !important; animation: pulse 0.4s infinite; }
+    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.7; } 100% { opacity: 1; } }
+
+    .timer-val { font-size: 3.5em; font-weight: 900; line-height: 1; color: var(--warn); }
+    .shindo-display { font-size: 4em; font-weight: 900; color: var(--main); margin: 0; }
+    #seismo-canvas { background: #050505; border-radius: 12px; width: 100%; height: 130px; border: 1px solid #222; margin: 10px 0; }
+    
+    .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .info-item { background: #2c2c2e; padding: 10px; border-radius: 12px; border-left: 3px solid var(--main); }
+    .label { font-size: 0.6em; color: #aaa; display: block; }
+    .val { font-size: 0.95em; font-weight: bold; }
+    .action-btn { background: var(--main); color: white; border: none; padding: 20px; border-radius: 15px; font-weight: bold; font-size: 1.2em; cursor: pointer; }
+  </style>
+</head>
+<body>
+
+<!-- 免責事項パネル -->
+<div id="disclaimer">
+  <div class="modal-content">
+    <h3>利用規約・免責事項</h3>
+    <p style="font-size: 0.8em; text-align: left; color: #ccc;">
+      ・本アプリは端末のセンサーを使用した推定値であり、正確な地震情報を保証するものではありません。<br>
+      ・緊急時は気象庁等の公的機関の情報を優先してください。<br>
+      ・本アプリの使用により生じた損害について、開発者は一切の責任を負いません。
+    </p>
+    <button class="action-btn" onclick="agree()">同意して起動</button>
+  </div>
+</div>
+
+<div class="device">
+  <div class="header">救命防災ポータル</div>
+  <div id="screen">
+    <div id="timer-panel">
+      <div style="font-size:0.8em; color:#aaa; margin-bottom:5px;" id="timer-status">P波検知待機中...</div>
+      <div class="timer-val" id="timer-num">--<span style="font-size:0.4em;">SEC</span></div>
+      <div id="predict-info" style="font-size: 0.9em; margin-top: 10px; color: var(--warn); font-weight: bold;"></div>
+    </div>
+
+    <div style="background: #1c1c1e; border-radius: 20px; padding: 15px; text-align: center; border: 1px solid #333;">
+      <div class="shindo-display" id="shindo-val">0.0</div>
+      <canvas id="seismo-canvas"></canvas>
+      <div class="info-grid">
+        <div class="info-item"><span class="label">推定M</span><span class="val" id="val-m">---</span></div>
+        <div class="info-item"><span class="label">震源距離</span><span class="val" id="val-dist">--- km</span></div>
+        <div class="info-item"><span class="label">最大加速度</span><span class="val" id="val-gal">0.0 gal</span></div>
+        <div class="info-item"><span class="label">方位</span><span class="val" id="val-dir">---</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // 前回のスクリプト全文（音声・解析ロジック等）をここに含めます
+  // agree() 関数でモーダルを消し、initSystem() を呼び出すように変更
+  function agree() {
+    document.getElementById('disclaimer').style.display = 'none';
+    initSystem();
+  }
+
+  // --- 以下、前回のロジックを統合 ---
+  let ctx, canvas, animationId, cdInterval, audioCtx;
+  let dataPoints = [];
+  let lastX = 0, lastY = 0, lastZ = 0;
+  let pTime = 0, sTime = 0, peakGal = 0, isP = false, isS = false;
+  let currentAccel = 0, quietTimer = null;
+
+  function initSystem() {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    canvas = document.getElementById('seismo-canvas');
+    ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = canvas.offsetWidth * dpr;
+    canvas.height = canvas.offsetHeight * dpr;
+    ctx.scale(dpr, dpr);
+    dataPoints = new Array(Math.floor(canvas.width / dpr)).fill(canvas.height / (2 * dpr));
+
+    if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+      DeviceMotionEvent.requestPermission().then(state => { if (state === 'granted') startTracking(); });
+    } else { startTracking(); }
+  }
+
+  function playAlertSound(freq, duration, type = 'square') {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration);
+  }
+
+  function startTracking() {
+    window.addEventListener('devicemotion', processMotion, true);
+    draw();
+  }
+
+  function autoReset() {
+    isP = false; isS = false; pTime = 0; sTime = 0; peakGal = 0;
+    if(cdInterval) clearInterval(cdInterval);
+    document.getElementById('timer-panel').className = "";
+    document.getElementById('timer-status').innerText = "P波検知待機中...";
+    document.getElementById('timer-num').innerHTML = `--<span style="font-size:0.4em;">SEC</span>`;
+    document.getElementById('predict-info').innerText = "";
+  }
+
+  function processMotion(e) {
+    const acc = e.acceleration || {x:0, y:0, z:0};
+    const x = acc.x||0, y = acc.y||0, z = acc.z||0;
+    const jerk = Math.sqrt((x-lastX)**2 + (y-lastY)**2 + (z-lastZ)**2);
+    currentAccel = Math.sqrt(x*x + y*y + z*z);
+    const gal = currentAccel * 100;
+    const now = Date.now();
+
+    const shindo = (gal < 0.8) ? 0.0 : (2 * Math.log10(gal) + 0.94);
+    document.getElementById('shindo-val').innerText = shindo.toFixed(1);
+
+    if (jerk > 0.02 && !isP) {
+      pTime = now; isP = true;
+      startCountdown(jerk);
+    }
+
+    if (currentAccel > 0.4 && !isS) {
+      sTime = now; isS = true;
+      if(cdInterval) clearInterval(cdInterval);
+      triggerSArrival();
+    }
+
+    if (gal > peakGal) {
+      peakGal = gal;
+      document.getElementById('val-gal').innerText = gal.toFixed(1) + " gal";
+      if (isS) {
+        runAnalysis(peakGal);
+        if(shindo >= 4) playAlertSound(880, 0.5, 'sawtooth');
+      }
+    }
+
+    if (currentAccel < 0.1) {
+      if (!quietTimer) quietTimer = setTimeout(() => { autoReset(); quietTimer = null; }, 100);
+    } else {
+      if (quietTimer) { clearTimeout(quietTimer); quietTimer = null; }
+    }
+    lastX = x; lastY = y; lastZ = z;
+  }
+
+  function startCountdown(jerk) {
+    document.getElementById('timer-panel').classList.add('timer-active');
+    document.getElementById('timer-status').innerText = "⚠️ P波検知！";
+    let pShindo = Math.min(7, (Math.log10(jerk * 50) + 2.5)).toFixed(1);
+    document.getElementById('predict-info').innerText = `到達予想: 震度 ${pShindo}`;
+    let sec = Math.max(2, Math.min(10, Math.floor(6 / (jerk * 10)))); 
+    document.getElementById('timer-num').innerHTML = `${sec}<span style="font-size:0.4em;">SEC</span>`;
+    cdInterval = setInterval(() => {
+      if(sec > 0 && !isS) {
+        sec--;
+        document.getElementById('timer-num').innerHTML = `${sec}<span style="font-size:0.4em;">SEC</span>`;
+        playAlertSound(440, 0.1);
+      } else { clearInterval(cdInterval); }
+    }, 1000);
+  }
+
+  function triggerSArrival() {
+    document.getElementById('timer-panel').className = "timer-danger";
+    document.getElementById('timer-status').innerText = "🚨 本震到達 🚨";
+    document.getElementById('timer-num').innerHTML = `0<span style="font-size:0.4em;">SEC</span>`;
+    playAlertSound(660, 0.8, 'sawtooth');
+  }
+
+  function runAnalysis(gal) {
+    let m = (Math.log10(gal * 1.8) + 4.8) / 1.15;
+    document.getElementById('val-m').innerText = "M " + m.toFixed(1);
+    if (pTime > 0 && sTime > pTime) {
+      const dist = 7.5 * ((sTime - pTime) / 1000);
+      document.getElementById('val-dist').innerText = dist.toFixed(1) + " km";
+    }
+    document.getElementById('val-dir').innerText = (Math.abs(lastX) > Math.abs(lastY)) ? "東西方向" : "南北方向";
+  }
+
+  function draw() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.width / dpr, h = canvas.height / dpr;
+    ctx.clearRect(0, 0, w, h);
+    dataPoints.shift();
+    dataPoints.push((h / 2) - (currentAccel * 50));
+    ctx.beginPath();
+    ctx.strokeStyle = isS ? '#ff3b30' : (isP ? '#fbbc04' : '#00ff00');
+    ctx.lineWidth = 2;
+    for (let i = 0; i < dataPoints.length; i++) {
+      i === 0 ? ctx.moveTo(i, dataPoints[i]) : ctx.lineTo(i, dataPoints[i]);
+    }
+    ctx.stroke();
+    animationId = requestAnimationFrame(draw);
+  }
+</script>
+</body>
+</html>
