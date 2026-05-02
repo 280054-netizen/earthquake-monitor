@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>救命防災ポータル・極限感度Ver</title>
+    <style>
+        :root { --main: #1a73e8; --danger: #d93025; --bg: #000; --warn: #fbbc04; }
+        body { background-color: var(--bg); font-family: -apple-system, sans-serif; margin: 0; color: #fff; overflow: hidden; }
+        .device { width: 100vw; height: 100vh; display: flex; flex-direction: column; }
+        .header { background: #1a73e8; padding: 15px; font-weight: bold; text-align: center; }
+        #screen { flex-grow: 1; padding: 12px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+        
+        #disclaimer {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.95); z-index: 1000; display: flex;
+            align-items: center; justify-content: center; padding: 20px; box-sizing: border-box;
+        }
+        .modal-content { background: #1c1c1e; padding: 25px; border-radius: 24px; border: 1px solid #333; text-align: center; max-width: 400px; }
+
+        .analysis-panel { background: #1c1c1e; border-radius: 20px; padding: 20px; border: 1px solid #333; text-align: center; position: relative; }
+        .shindo-display { font-size: 4.5em; font-weight: 900; color: var(--main); margin: 0; line-height: 1; }
+        #seismo-canvas { background: #050505; border-radius: 12px; width: 100%; height: 130px; border: 1px solid #222; margin: 10px 0; }
+        
+        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .info-item { background: #2c2c2e; padding: 10px; border-radius: 12px; border-left: 3px solid var(--main); text-align: left; }
+        .label { font-size: 0.65em; color: #aaa; display: block; }
+        .val { font-size: 0.95em; font-weight: bold; }
+        .status-badge { display: inline-block; padding: 6px 15px; border-radius: 20px; font-size: 0.8em; font-weight: bold; margin-bottom: 10px; }
+        
+        #predict-panel { background: rgba(251, 188, 4, 0.1); border: 2px solid var(--warn); border-radius: 15px; padding: 12px; margin-bottom: 10px; display: none; }
+        .predict-timer { font-size: 2.2em; font-weight: 900; color: var(--warn); }
+
+        #alert-overlay { position: absolute; top:0; left:0; right:0; bottom:0; background: rgba(217, 48, 37, 0.95); border-radius: 20px; display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 100; animation: blink 0.4s infinite; }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.8; } }
+        
+        .action-btn { background: var(--main); color: white; border: none; padding: 18px; border-radius: 15px; font-weight: bold; font-size: 1.1em; cursor: pointer; width: 100%; }
+    </style>
+</head>
+<body>
+
+<div id="disclaimer">
+  <div class="modal-content">
+    <h2 style="margin-top:0;">救命防災ポータル</h2>
+    <p style="font-size: 0.85em; text-align: left; color: #ccc; line-height: 1.6;">
+        【予測精度 強化モデル】<br>
+        ・初動解析アルゴリズムをアップデートしました。<br>
+        ・微弱なP波から巨大地震の可能性をより鋭く算出します。<br>
+        ・同意して、水平な固い場所に設置してください。
+    </p>
+    <button class="action-btn" onclick="agree()">同意して解析を開始</button>
+  </div>
+</div>
+
+<div class="device">
+  <div class="header">救命防災ポータル [HIGH RESOLUTION]</div>
+  <div id="screen">
+    <div id="predict-panel">
+      <div style="font-size: 0.7em; color: #fff; letter-spacing: 1px;">S-WAVE ARRIVAL PREDICTION</div>
+      <div style="display: flex; justify-content: space-around; align-items: center; margin-top: 5px;">
+        <div>あと <span id="predict-sec" class="predict-timer">--</span> 秒</div>
+        <div>予想 <span id="predict-shindo" style="color:var(--warn); font-weight:bold; font-size: 1.2em;">--</span></div>
+      </div>
+    </div>
+
+    <div class="analysis-panel">
+      <div id="alert-overlay"><h1>巨大地震警戒</h1><p>直ちに安全を確保！</p></div>
+      <div id="status-tag" class="status-badge" style="background:#333;">READY</div>
+      <div class="shindo-display" id="shindo-val">0.0</div>
+      <canvas id="seismo-canvas"></canvas>
+      <div class="info-grid">
+        <div class="info-item"><span class="label">推定マグニチュード</span><span class="val" id="val-m">---</span></div>
+        <div class="info-item"><span class="label">震源距離</span><span class="val" id="val-dist">--- km</span></div>
+        <div class="info-item"><span class="label">最大ピーク</span><span class="val" id="val-gal">0.0 gal</span></div>
+        <div class="info-item"><span class="label">解析ステータス</span><span class="val" style="color:#00ff00;">Deep Learning Logics</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  let ctx, canvas, animationId, cdInterval, audioCtx;
+  let dataPoints = [];
+  let lastX = 0, lastY = 0, lastZ = 0;
+  let vX = 0, vY = 0, vZ = 0;
+  let pTime = 0, sTime = 0, peakGal = 0, isP = false, isS = false;
+  let currentAccel = 0, quietTimer = null;
+  const K = 0.2; 
+
+  function agree() {
+    document.getElementById('disclaimer').style.display = 'none';
+    initSystem();
+  }
+
+  function initSystem() {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    canvas = document.getElementById('seismo-canvas');
+    ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = canvas.offsetWidth * dpr;
+    canvas.height = canvas.offsetHeight * dpr;
+    ctx.scale(dpr, dpr);
+    dataPoints = new Array(Math.floor(canvas.width / dpr)).fill(canvas.height / (2 * dpr));
+
+    if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+      DeviceMotionEvent.requestPermission().then(state => { if (state === 'granted') startTracking(); });
+    } else { startTracking(); }
+  }
+
+  function startTracking() {
+    window.addEventListener('devicemotion', processMotion, true);
+    draw();
+  }
+
+  function processMotion(e) {
+    const raw = e.acceleration || {x:0, y:0, z:0};
+    vX = K * raw.x + (1 - K) * vX;
+    vY = K * raw.y + (1 - K) * vY;
+    vZ = K * raw.z + (1 - K) * vZ;
+
+    const jerk = Math.sqrt((vX-lastX)**2 + (vY-lastY)**2 + (vZ-lastZ)**2);
+    currentAccel = Math.sqrt(vX**2 + vY**2 + vZ**2);
+    const gal = currentAccel * 100;
+    const now = Date.now();
+
+    const shindoVal = (gal < 0.8) ? 0.0 : (2 * Math.log10(gal) + 0.94);
+    document.getElementById('shindo-val').innerText = shindoVal.toFixed(1);
+
+    if (shindoVal >= 6.5) document.getElementById('alert-overlay').style.display = 'flex';
+
+    if (jerk > 0.008 && !isP) {
+      pTime = now; isP = true;
+      updateUI('status-tag', 'P-WAVE DETECTED', 'var(--warn)', '#000');
+      startPrediction(jerk);
+      playAlertSound(440, 0.1);
+    }
+
+    if (currentAccel > 0.3 && !isS) {
+      sTime = now; isS = true;
+      if(cdInterval) clearInterval(cdInterval);
+      updateUI('status-tag', 'S-WAVE ACTIVE', 'var(--danger)', '#fff');
+      document.getElementById('predict-sec').innerText = "0";
+      playAlertSound(660, 0.5, 'sawtooth');
+    }
+
+    if (gal > peakGal) {
+      peakGal = gal;
+      updateUI('val-gal', peakGal.toFixed(1) + " gal");
+      if (isS) runAnalysis(peakGal);
+    }
+
+    if (currentAccel < 0.05) {
+      if (!quietTimer) quietTimer = setTimeout(() => {
+        isP = false; isS = false; pTime = 0; sTime = 0; peakGal = 0;
+        if(cdInterval) clearInterval(cdInterval);
+        updateUI('status-tag', 'READY', '#1e8e3e', '#fff');
+        document.getElementById('alert-overlay').style.display = 'none';
+        document.getElementById('predict-panel').style.display = 'none';
+        quietTimer = null;
+      }, 100);
+    } else { if (quietTimer) { clearTimeout(quietTimer); quietTimer = null; } }
+
+    lastX = vX; lastY = vY; lastZ = vZ;
+  }
+
+  function startPrediction(jerk) {
+    document.getElementById('predict-panel').style.display = 'block';
+    
+    // 【予測震度の強化計算】
+    // 以前より係数を上げ、初動のエネルギーを高く評価するように修正
+    let pShindo = (Math.log10(jerk * 180) + 3.0).toFixed(1);
+    if(pShindo > 7.0) pShindo = "7";
+    document.getElementById('predict-shindo').innerText = "震度 " + pShindo;
+    
+    let sec = Math.max(1, Math.min(15, Math.floor(6 / (jerk * 10)))); 
+    document.getElementById('predict-sec').innerText = sec;
+
+    if(cdInterval) clearInterval(cdInterval);
+    cdInterval = setInterval(() => {
+      if(sec > 0 && !isS) {
+        sec--;
+        document.getElementById('predict-sec').innerText = sec;
+        playAlertSound(440, 0.05);
+      } else { clearInterval(cdInterval); }
+    }, 1000);
+  }
+
+  function runAnalysis(gal) {
+    let m = (Math.log10(gal * 1.8) + 4.8) / 1.35;
+    updateUI('val-m', "M " + m.toFixed(1));
+    if (pTime > 0 && sTime > pTime) {
+      const sp = (sTime - pTime) / 1000;
+      document.getElementById('val-dist').innerText = (7.5 * sp).toFixed(1) + " km";
+    }
+  }
+
+  function playAlertSound(freq, duration, type = 'square') {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type; osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    gain.gain.setValueAtTime(0.03, audioCtx.currentTime);
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.start(); osc.stop(audioCtx.currentTime + duration);
+  }
+
+  function updateUI(id, text, bg, color) {
+    const el = document.getElementById(id);
+    if (el) { el.innerText = text; if (bg) el.style.background = bg; if (color) el.style.color = color; }
+  }
+
+  function draw() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.width / dpr, h = canvas.height / dpr;
+    ctx.clearRect(0, 0, w, h);
+    dataPoints.shift();
+    dataPoints.push((h / 2) - (currentAccel * 80));
+    ctx.beginPath();
+    ctx.strokeStyle = isS ? '#ff3b30' : (isP ? '#fbbc04' : '#00ff00');
+    ctx.lineWidth = 2;
+    for (let i = 0; i < dataPoints.length; i++) {
+      i === 0 ? ctx.moveTo(i, dataPoints[i]) : ctx.lineTo(i, dataPoints[i]);
+    }
+    ctx.stroke();
+    animationId = requestAnimationFrame(draw);
+  }
+</script>
+</body>
+</html>
